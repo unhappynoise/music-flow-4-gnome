@@ -1,0 +1,8 @@
+{
+  "name": "Music Flow",
+  "description": "MPRIS media widget with soundwave visualizerr",
+  "uuid": "musicflow@unhappynoise",
+  "shell-version": [
+    "46"
+  ]
+}

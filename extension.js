@@ -6,7 +6,7 @@ import {Extension, gettext as _} from 'resource:///org/gnome/shell/extensions/ex
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 
-const MPRIS_BUS_NAME = 'org.mpris.MediaPlayer2.spotify';
+const MPRIS_PREFIX = 'org.mpris.MediaPlayer2.';
 const MPRIS_OBJECT_PATH = '/org/mpris/MediaPlayer2';
 const MPRIS_PLAYER_IFACE = 'org.mpris.MediaPlayer2.Player';
 
@@ -22,15 +22,68 @@ class Indicator extends PanelMenu.Button {
         this.add_child(this._label);
 
         this._proxy = null;
-        this._connectToPlayer();
+        this._currentBusName = null;
+
+        this._watchForPlayers();
     }
 
-    _connectToPlayer() {
+    _watchForPlayers() {
+        // Watch for any service name appearing/disappearing on the bus
+        this._nameOwnerId = Gio.DBus.session.signal_subscribe(
+            'org.freedesktop.DBus',
+            'org.freedesktop.DBus',
+            'NameOwnerChanged',
+            '/org/freedesktop/DBus',
+            null,
+            Gio.DBusSignalFlags.NONE,
+            (conn, sender, path, iface, signal, params) => {
+                let [name] = params.deep_unpack();
+                if (name.startsWith(MPRIS_PREFIX))
+                    this._findActivePlayer();
+            }
+        );
+
+        this._findActivePlayer();
+    }
+
+    _findActivePlayer() {
+        Gio.DBus.session.call(
+            'org.freedesktop.DBus',
+            '/org/freedesktop/DBus',
+            'org.freedesktop.DBus',
+            'ListNames',
+            null,
+            null,
+            Gio.DBusCallFlags.NONE,
+            -1,
+            null,
+            (conn, res) => {
+                let [names] = conn.call_finish(res).deep_unpack();
+                let playerNames = names.filter(n => n.startsWith(MPRIS_PREFIX));
+
+                if (playerNames.length === 0) {
+                    this._currentBusName = null;
+                    this._proxy = null;
+                    this._label.set_text(_('No music playing'));
+                    return;
+                }
+
+                // Just take the first one found for now
+                let busName = playerNames[0];
+                if (busName !== this._currentBusName) {
+                    this._currentBusName = busName;
+                    this._connectToPlayer(busName);
+                }
+            }
+        );
+    }
+
+    _connectToPlayer(busName) {
         Gio.DBusProxy.new_for_bus(
             Gio.BusType.SESSION,
             Gio.DBusProxyFlags.NONE,
             null,
-            MPRIS_BUS_NAME,
+            busName,
             MPRIS_OBJECT_PATH,
             MPRIS_PLAYER_IFACE,
             null,
@@ -38,7 +91,7 @@ class Indicator extends PanelMenu.Button {
                 try {
                     this._proxy = Gio.DBusProxy.new_for_bus_finish(res);
                 } catch (e) {
-                    logError(e, 'Music Flow: failed to connect to Spotify');
+                    logError(e, `Music Flow: failed to connect to ${busName}`);
                     return;
                 }
 
@@ -67,6 +120,14 @@ class Indicator extends PanelMenu.Button {
         let artist = artistArr[0] || 'Unknown artist';
 
         this._label.set_text(`${title} — ${artist}`);
+    }
+
+    destroy() {
+        if (this._nameOwnerId) {
+            Gio.DBus.session.signal_unsubscribe(this._nameOwnerId);
+            this._nameOwnerId = null;
+        }
+        super.destroy();
     }
 });
 

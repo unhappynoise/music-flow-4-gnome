@@ -2,6 +2,8 @@
 
 An MPRIS media widget for the GNOME Shell top bar — see what's playing and control it (play, pause, skip) without switching apps.
 
+![Music Flow dropdown panel](screenshots/dropdown-panel.png)
+
 ## Why this exists
 
 I first heard about [Music Flow](https://github.com/Clifford-Baidoo/Omarchy-music-flow) from a senior who'd built it — a slick MPRIS media widget for the bar. I installed it without checking closely, and only after running into `command not found` did I realize it was built specifically for Omarchy (Arch + Hyprland), not for the Ubuntu/GNOME setup I actually run lol.

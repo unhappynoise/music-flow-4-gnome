@@ -22,7 +22,7 @@ This is step one. There may already be extensions that do parts of this — but 
 
 ## Requirements
 
-- GNOME Shell **45 or newer** (built and tested on GNOME 46.0, Wayland)
+- GNOME Shell **45 or newer**. Built and tested hands-on on GNOME 46.0 (Wayland) — should work on 45, 47, and 48 too since they share the same extension API, but that's not yet personally verified. If you try it on another version, please [open an issue](https://github.com/unhappynoise/music-flow-4-gnome/issues) and let me know how it goes!
 - Ubuntu or any GNOME-based distro
 
 ## Installation

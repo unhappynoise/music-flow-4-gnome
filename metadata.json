@@ -1,8 +1,12 @@
 {
   "name": "Music Flow",
-  "description": "MPRIS media widget with soundwave visualizerr",
+  "description": "MPRIS media widget with soundwave visualizer, album art, and playback controls for the GNOME top bar",
   "uuid": "musicflow@unhappynoise",
+  "url": "https://github.com/unhappynoise/music-flow-4-gnome",
   "shell-version": [
-    "46"
+    "45",
+    "46",
+    "47",
+    "48"
   ]
 }

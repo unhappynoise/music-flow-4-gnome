@@ -49,9 +49,10 @@ You should see the widget appear in your top bar showing the current track, or "
 
 ## Roadmap
 
-- [ ] Animated soundwave visualizer (like the original Omarchy Music Flow)
+- [x] Animated soundwave visualizer (stylized, non-audio-reactive)
 - [ ] Floating player panel with album art
 - [ ] Volume/seek controls
+- [ ] Real audio-reactive visualizer using PipeWire (v2)
 - [ ] Wider distro support beyond GNOME
 
 ## Credits

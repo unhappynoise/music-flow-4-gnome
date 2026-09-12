@@ -1,6 +1,7 @@
 import GObject from 'gi://GObject';
 import St from 'gi://St';
 import Gio from 'gi://Gio';
+import GLib from 'gi://GLib';
 import Clutter from 'gi://Clutter';
 import {Extension, gettext as _} from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
@@ -11,16 +12,97 @@ const MPRIS_PREFIX = 'org.mpris.MediaPlayer2.';
 const MPRIS_OBJECT_PATH = '/org/mpris/MediaPlayer2';
 const MPRIS_PLAYER_IFACE = 'org.mpris.MediaPlayer2.Player';
 
+const BAR_COUNT = 4;
+const WAVE_WIDTH = 24;
+const WAVE_HEIGHT = 16;
+
+const WaveVisualizer = GObject.registerClass(
+class WaveVisualizer extends St.DrawingArea {
+    _init() {
+        super._init({
+            width: WAVE_WIDTH,
+            height: WAVE_HEIGHT,
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+
+        this._phase = 0;
+        this._playing = false;
+        this._timeoutId = null;
+    }
+
+    setPlaying(isPlaying) {
+        if (isPlaying === this._playing)
+            return;
+
+        this._playing = isPlaying;
+
+        if (isPlaying && !this._timeoutId) {
+            this._timeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 120, () => {
+                this._phase += 1;
+                this.queue_repaint();
+                return GLib.SOURCE_CONTINUE;
+            });
+        } else if (!isPlaying && this._timeoutId) {
+            GLib.source_remove(this._timeoutId);
+            this._timeoutId = null;
+            this.queue_repaint();
+        }
+    }
+
+    vfunc_repaint() {
+        let cr = this.get_context();
+        let [width, height] = this.get_surface_size();
+        let barWidth = width / BAR_COUNT;
+
+        cr.setSourceRGBA(1, 1, 1, 0.9);
+
+        for (let i = 0; i < BAR_COUNT; i++) {
+            let barHeight;
+            if (this._playing) {
+                let wave = Math.sin((this._phase + i * 2) * 0.6);
+                barHeight = height * (0.35 + 0.3 * Math.abs(wave));
+            } else {
+                barHeight = height * 0.15;
+            }
+
+            let x = i * barWidth + barWidth * 0.2;
+            let y = (height - barHeight) / 2;
+            cr.rectangle(x, y, barWidth * 0.6, barHeight);
+        }
+
+        cr.fill();
+        cr.$dispose();
+    }
+
+    destroy() {
+        if (this._timeoutId) {
+            GLib.source_remove(this._timeoutId);
+            this._timeoutId = null;
+        }
+        super.destroy();
+    }
+});
+
 const Indicator = GObject.registerClass(
 class Indicator extends PanelMenu.Button {
     _init() {
         super._init(0.0, _('Music Flow'));
 
+        let box = new St.BoxLayout({
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+
+        this._wave = new WaveVisualizer();
+        box.add_child(this._wave);
+
         this._label = new St.Label({
             text: _('No music playing'),
             y_align: Clutter.ActorAlign.CENTER,
+            style: 'margin-left: 6px;',
         });
-        this.add_child(this._label);
+        box.add_child(this._label);
+
+        this.add_child(box);
 
         this._proxies = new Map();
         this._lastChanged = new Map();
@@ -189,6 +271,7 @@ class Indicator extends PanelMenu.Button {
             this._activeProxy = this._proxies.get(bestBusName);
             this._updateLabel(this._activeProxy);
             this._updatePlayPauseIcon(true);
+            this._wave.setPlaying(true);
             return;
         }
 
@@ -198,6 +281,7 @@ class Indicator extends PanelMenu.Button {
                 this._activeProxy = proxy;
                 this._updateLabel(proxy);
                 this._updatePlayPauseIcon(false);
+                this._wave.setPlaying(false);
                 return;
             }
         }
@@ -205,6 +289,7 @@ class Indicator extends PanelMenu.Button {
         this._activeProxy = null;
         this._updateLabel(null);
         this._updatePlayPauseIcon(false);
+        this._wave.setPlaying(false);
     }
 
     _updatePlayPauseIcon(isPlaying) {
@@ -241,6 +326,7 @@ class Indicator extends PanelMenu.Button {
         }
         this._proxies.clear();
         this._lastChanged.clear();
+        this._wave.destroy();
         super.destroy();
     }
 });

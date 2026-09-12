@@ -6,6 +6,7 @@ import Clutter from 'gi://Clutter';
 import {Extension, gettext as _} from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
+import * as Slider from 'resource:///org/gnome/shell/ui/slider.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 
 const MPRIS_PREFIX = 'org.mpris.MediaPlayer2.';
@@ -15,6 +16,7 @@ const MPRIS_PLAYER_IFACE = 'org.mpris.MediaPlayer2.Player';
 const BAR_COUNT = 4;
 const WAVE_WIDTH = 24;
 const WAVE_HEIGHT = 16;
+const ART_SIZE = 96;
 
 const WaveVisualizer = GObject.registerClass(
 class WaveVisualizer extends St.DrawingArea {
@@ -87,6 +89,7 @@ const Indicator = GObject.registerClass(
 class Indicator extends PanelMenu.Button {
     _init() {
         super._init(0.0, _('Music Flow'));
+        this.menu.box.style = 'min-width: 280px;';
 
         let box = new St.BoxLayout({
             y_align: Clutter.ActorAlign.CENTER,
@@ -107,7 +110,15 @@ class Indicator extends PanelMenu.Button {
         this._proxies = new Map();
         this._lastChanged = new Map();
         this._activeProxy = null;
+        this._activeBusName = null;
+        this._lastArtUrl = null;
+        this._trackLength = 0;
+        this._currentPosition = 0;
+        this._userSeeking = false;
+        this._positionTimeoutId = null;
 
+        this._buildNowPlayingPanel();
+        this._buildSeekBar();
         this._buildControls();
 
         this._nameOwnerId = Gio.DBus.session.signal_subscribe(
@@ -133,6 +144,93 @@ class Indicator extends PanelMenu.Button {
         );
 
         this._discoverExistingPlayers();
+    }
+
+    _buildNowPlayingPanel() {
+        let panelItem = new PopupMenu.PopupBaseMenuItem({
+            reactive: false,
+            can_focus: false,
+        });
+
+        let row = new St.BoxLayout({
+            x_expand: true,
+            style: 'padding: 6px;',
+        });
+
+        this._artIcon = new St.Icon({
+            icon_name: 'audio-x-generic-symbolic',
+            icon_size: ART_SIZE,
+            style: 'margin-right: 10px;',
+        });
+        row.add_child(this._artIcon);
+
+        let textBox = new St.BoxLayout({
+            vertical: true,
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+
+        this._panelTitleLabel = new St.Label({
+            text: _('No music playing'),
+            style: 'font-weight: bold; font-size: 1.3em;',
+        });
+        this._panelArtistLabel = new St.Label({
+            text: '',
+            style: 'opacity: 0.7; font-size: 1.05em;',
+        });
+
+        textBox.add_child(this._panelTitleLabel);
+        textBox.add_child(this._panelArtistLabel);
+        row.add_child(textBox);
+
+        panelItem.add_child(row);
+        this.menu.addMenuItem(panelItem);
+    }
+
+    _buildSeekBar() {
+        let seekItem = new PopupMenu.PopupBaseMenuItem({
+            reactive: false,
+            can_focus: false,
+        });
+
+        let container = new St.BoxLayout({
+            vertical: true,
+            x_expand: true,
+            style: 'padding: 4px 6px;',
+        });
+
+        this._seekSlider = new Slider.Slider(0);
+        this._seekSlider.x_expand = true;
+
+        this._seekSlider.connect('drag-begin', () => {
+            this._userSeeking = true;
+        });
+        this._seekSlider.connect('drag-end', () => {
+            this._userSeeking = false;
+            this._performSeek();
+        });
+
+        let timeRow = new St.BoxLayout({
+            x_expand: true,
+        });
+        this._elapsedLabel = new St.Label({
+            text: '0:00',
+            style: 'font-size: 0.85em; opacity: 0.7;',
+        });
+        this._totalLabel = new St.Label({
+            text: '0:00',
+            style: 'font-size: 0.85em; opacity: 0.7;',
+            x_align: Clutter.ActorAlign.END,
+            x_expand: true,
+        });
+        timeRow.add_child(this._elapsedLabel);
+        timeRow.add_child(this._totalLabel);
+
+        container.add_child(this._seekSlider);
+        container.add_child(timeRow);
+
+        seekItem.add_child(container);
+        this.menu.addMenuItem(seekItem);
+        this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
     }
 
     _buildControls() {
@@ -269,27 +367,34 @@ class Indicator extends PanelMenu.Button {
 
         if (bestBusName) {
             this._activeProxy = this._proxies.get(bestBusName);
-            this._updateLabel(this._activeProxy);
+            this._activeBusName = bestBusName;
+            this._updateNowPlaying(this._activeProxy);
             this._updatePlayPauseIcon(true);
             this._wave.setPlaying(true);
+            this._startPositionPolling();
             return;
         }
 
-        for (let proxy of this._proxies.values()) {
+        for (let [busName, proxy] of this._proxies.entries()) {
             let status = proxy.get_cached_property('PlaybackStatus');
             if (status && status.deep_unpack() === 'Paused') {
                 this._activeProxy = proxy;
-                this._updateLabel(proxy);
+                this._activeBusName = busName;
+                this._updateNowPlaying(proxy);
                 this._updatePlayPauseIcon(false);
                 this._wave.setPlaying(false);
+                this._stopPositionPolling();
                 return;
             }
         }
 
         this._activeProxy = null;
-        this._updateLabel(null);
+        this._activeBusName = null;
+        this._updateNowPlaying(null);
         this._updatePlayPauseIcon(false);
         this._wave.setPlaying(false);
+        this._stopPositionPolling();
+        this._resetSeekUI();
     }
 
     _updatePlayPauseIcon(isPlaying) {
@@ -299,15 +404,23 @@ class Indicator extends PanelMenu.Button {
             : 'media-playback-start-symbolic';
     }
 
-    _updateLabel(proxy) {
+    _updateNowPlaying(proxy) {
         if (!proxy) {
             this._label.set_text(_('No music playing'));
+            this._panelTitleLabel.set_text(_('No music playing'));
+            this._panelArtistLabel.set_text('');
+            this._setArtwork(null);
+            this._trackLength = 0;
             return;
         }
 
         let metadata = proxy.get_cached_property('Metadata');
         if (!metadata) {
             this._label.set_text(_('No music playing'));
+            this._panelTitleLabel.set_text(_('No music playing'));
+            this._panelArtistLabel.set_text('');
+            this._setArtwork(null);
+            this._trackLength = 0;
             return;
         }
 
@@ -315,8 +428,139 @@ class Indicator extends PanelMenu.Button {
         let title = dict['xesam:title'] ? dict['xesam:title'].deep_unpack() : 'Unknown title';
         let artistArr = dict['xesam:artist'] ? dict['xesam:artist'].deep_unpack() : ['Unknown artist'];
         let artist = artistArr[0] || 'Unknown artist';
+        let artUrl = dict['mpris:artUrl'] ? dict['mpris:artUrl'].deep_unpack() : null;
+        let length = dict['mpris:length'] ? dict['mpris:length'].deep_unpack() : 0;
 
         this._label.set_text(`${title} — ${artist}`);
+        this._panelTitleLabel.set_text(title);
+        this._panelArtistLabel.set_text(artist);
+        this._setArtwork(artUrl);
+        this._trackLength = length;
+        this._totalLabel.set_text(this._formatTime(length));
+    }
+
+    _setArtwork(url) {
+        if (url === this._lastArtUrl)
+            return;
+
+        this._lastArtUrl = url;
+
+        if (!url) {
+            this._artIcon.gicon = null;
+            this._artIcon.icon_name = 'audio-x-generic-symbolic';
+            return;
+        }
+
+        try {
+            let file = Gio.File.new_for_uri(url);
+            this._artIcon.gicon = new Gio.FileIcon({file});
+        } catch (e) {
+            logError(e, 'Music Flow: failed to load album art');
+            this._artIcon.gicon = null;
+            this._artIcon.icon_name = 'audio-x-generic-symbolic';
+        }
+    }
+
+    _startPositionPolling() {
+        if (this._positionTimeoutId)
+            return;
+
+        this._fetchPosition();
+        this._positionTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 1000, () => {
+            this._fetchPosition();
+            return GLib.SOURCE_CONTINUE;
+        });
+    }
+
+    _stopPositionPolling() {
+        if (this._positionTimeoutId) {
+            GLib.source_remove(this._positionTimeoutId);
+            this._positionTimeoutId = null;
+        }
+    }
+
+    _fetchPosition() {
+        if (!this._activeProxy || !this._activeBusName || this._userSeeking)
+            return;
+
+        this._activeProxy.get_connection().call(
+            this._activeBusName,
+            MPRIS_OBJECT_PATH,
+            'org.freedesktop.DBus.Properties',
+            'Get',
+            new GLib.Variant('(ss)', [MPRIS_PLAYER_IFACE, 'Position']),
+            new GLib.VariantType('(v)'),
+            Gio.DBusCallFlags.NONE,
+            -1,
+            null,
+            (conn, res) => {
+                try {
+                    let reply = conn.call_finish(res);
+                    let [variant] = reply.deep_unpack();
+                    let position = variant.deep_unpack();
+                    this._updateSeekUI(position);
+                } catch (e) {
+                    // Some players don't support Position reads — ignore quietly
+                }
+            }
+        );
+    }
+
+    _updateSeekUI(positionMicro) {
+        this._currentPosition = positionMicro;
+
+        if (this._trackLength > 0)
+            this._seekSlider.value = Math.min(1, positionMicro / this._trackLength);
+
+        this._elapsedLabel.set_text(this._formatTime(positionMicro));
+    }
+
+    _resetSeekUI() {
+        this._seekSlider.value = 0;
+        this._elapsedLabel.set_text('0:00');
+        this._totalLabel.set_text('0:00');
+        this._currentPosition = 0;
+    }
+
+    _performSeek() {
+        if (!this._activeProxy || this._trackLength <= 0)
+            return;
+
+        let metadata = this._activeProxy.get_cached_property('Metadata');
+        if (!metadata)
+            return;
+
+        let dict = metadata.deep_unpack();
+        let trackId = dict['mpris:trackid'] ? dict['mpris:trackid'].deep_unpack() : null;
+        if (!trackId)
+            return;
+
+        let targetPosition = Math.floor(this._seekSlider.value * this._trackLength);
+
+        this._activeProxy.call(
+            'SetPosition',
+            new GLib.Variant('(ox)', [trackId, targetPosition]),
+            Gio.DBusCallFlags.NONE,
+            -1,
+            null,
+            (proxy, res) => {
+                try {
+                    this._activeProxy.call_finish(res);
+                } catch (e) {
+                    logError(e, 'Music Flow: SetPosition failed');
+                }
+            }
+        );
+
+        this._currentPosition = targetPosition;
+        this._elapsedLabel.set_text(this._formatTime(targetPosition));
+    }
+
+    _formatTime(micro) {
+        let totalSeconds = Math.floor(micro / 1000000);
+        let minutes = Math.floor(totalSeconds / 60);
+        let seconds = totalSeconds % 60;
+        return `${minutes}:${seconds.toString().padStart(2, '0')}`;
     }
 
     destroy() {
@@ -324,6 +568,7 @@ class Indicator extends PanelMenu.Button {
             Gio.DBus.session.signal_unsubscribe(this._nameOwnerId);
             this._nameOwnerId = null;
         }
+        this._stopPositionPolling();
         this._proxies.clear();
         this._lastChanged.clear();
         this._wave.destroy();

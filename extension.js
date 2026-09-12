@@ -109,6 +109,7 @@ class Indicator extends PanelMenu.Button {
 
         this._proxies = new Map();
         this._lastChanged = new Map();
+        this._signalHandlerIds = new Map();
         this._activeProxy = null;
         this._activeBusName = null;
         this._lastArtUrl = null;
@@ -134,8 +135,13 @@ class Indicator extends PanelMenu.Button {
                     return;
 
                 if (newOwner === '') {
+                    let proxy = this._proxies.get(name);
+                    let handlerId = this._signalHandlerIds.get(name);
+                    if (proxy && handlerId)
+                        proxy.disconnect(handlerId);
                     this._proxies.delete(name);
                     this._lastChanged.delete(name);
+                    this._signalHandlerIds.delete(name);
                     this._pickActivePlayer();
                 } else if (oldOwner === '') {
                     this._connectToPlayer(name);
@@ -338,10 +344,11 @@ class Indicator extends PanelMenu.Button {
                 this._proxies.set(busName, proxy);
                 this._lastChanged.set(busName, Date.now());
 
-                proxy.connect('g-properties-changed', () => {
+                let handlerId = proxy.connect('g-properties-changed', () => {
                     this._lastChanged.set(busName, Date.now());
                     this._pickActivePlayer();
                 });
+                this._signalHandlerIds.set(busName, handlerId);
 
                 this._pickActivePlayer();
             }
@@ -569,6 +576,14 @@ class Indicator extends PanelMenu.Button {
             this._nameOwnerId = null;
         }
         this._stopPositionPolling();
+
+        for (let [busName, proxy] of this._proxies.entries()) {
+            let handlerId = this._signalHandlerIds.get(busName);
+            if (handlerId)
+                proxy.disconnect(handlerId);
+        }
+
+        this._signalHandlerIds.clear();
         this._proxies.clear();
         this._lastChanged.clear();
         this._wave.destroy();

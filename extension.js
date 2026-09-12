@@ -4,6 +4,7 @@ import Gio from 'gi://Gio';
 import Clutter from 'gi://Clutter';
 import {Extension, gettext as _} from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
+import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 
 const MPRIS_PREFIX = 'org.mpris.MediaPlayer2.';
@@ -21,14 +22,12 @@ class Indicator extends PanelMenu.Button {
         });
         this.add_child(this._label);
 
-        this._proxy = null;
-        this._currentBusName = null;
+        this._proxies = new Map();
+        this._lastChanged = new Map();
+        this._activeProxy = null;
 
-        this._watchForPlayers();
-    }
+        this._buildControls();
 
-    _watchForPlayers() {
-        // Watch for any service name appearing/disappearing on the bus
         this._nameOwnerId = Gio.DBus.session.signal_subscribe(
             'org.freedesktop.DBus',
             'org.freedesktop.DBus',
@@ -37,16 +36,86 @@ class Indicator extends PanelMenu.Button {
             null,
             Gio.DBusSignalFlags.NONE,
             (conn, sender, path, iface, signal, params) => {
-                let [name] = params.deep_unpack();
-                if (name.startsWith(MPRIS_PREFIX))
-                    this._findActivePlayer();
+                let [name, oldOwner, newOwner] = params.deep_unpack();
+                if (!name.startsWith(MPRIS_PREFIX))
+                    return;
+
+                if (newOwner === '') {
+                    this._proxies.delete(name);
+                    this._lastChanged.delete(name);
+                    this._pickActivePlayer();
+                } else if (oldOwner === '') {
+                    this._connectToPlayer(name);
+                }
             }
         );
 
-        this._findActivePlayer();
+        this._discoverExistingPlayers();
     }
 
-    _findActivePlayer() {
+    _buildControls() {
+        let controlItem = new PopupMenu.PopupBaseMenuItem({
+            reactive: false,
+            can_focus: false,
+        });
+
+        let box = new St.BoxLayout({
+            x_expand: true,
+            x_align: Clutter.ActorAlign.CENTER,
+        });
+
+        this._prevButton = this._makeButton('media-skip-backward-symbolic', () => {
+            this._callPlayerMethod('Previous');
+        });
+        this._playPauseButton = this._makeButton('media-playback-start-symbolic', () => {
+            this._callPlayerMethod('PlayPause');
+        });
+        this._nextButton = this._makeButton('media-skip-forward-symbolic', () => {
+            this._callPlayerMethod('Next');
+        });
+
+        box.add_child(this._prevButton);
+        box.add_child(this._playPauseButton);
+        box.add_child(this._nextButton);
+
+        controlItem.add_child(box);
+        this.menu.addMenuItem(controlItem);
+    }
+
+    _makeButton(iconName, callback) {
+        let button = new St.Button({
+            style_class: 'button',
+            can_focus: true,
+            child: new St.Icon({
+                icon_name: iconName,
+                icon_size: 16,
+            }),
+        });
+        button.connect('clicked', callback);
+        return button;
+    }
+
+    _callPlayerMethod(method) {
+        if (!this._activeProxy)
+            return;
+
+        this._activeProxy.call(
+            method,
+            null,
+            Gio.DBusCallFlags.NONE,
+            -1,
+            null,
+            (proxy, res) => {
+                try {
+                    this._activeProxy.call_finish(res);
+                } catch (e) {
+                    logError(e, `Music Flow: failed to call ${method}`);
+                }
+            }
+        );
+    }
+
+    _discoverExistingPlayers() {
         Gio.DBus.session.call(
             'org.freedesktop.DBus',
             '/org/freedesktop/DBus',
@@ -59,26 +128,16 @@ class Indicator extends PanelMenu.Button {
             null,
             (conn, res) => {
                 let [names] = conn.call_finish(res).deep_unpack();
-                let playerNames = names.filter(n => n.startsWith(MPRIS_PREFIX));
-
-                if (playerNames.length === 0) {
-                    this._currentBusName = null;
-                    this._proxy = null;
-                    this._label.set_text(_('No music playing'));
-                    return;
-                }
-
-                // Just take the first one found for now
-                let busName = playerNames[0];
-                if (busName !== this._currentBusName) {
-                    this._currentBusName = busName;
-                    this._connectToPlayer(busName);
-                }
+                names.filter(n => n.startsWith(MPRIS_PREFIX))
+                    .forEach(name => this._connectToPlayer(name));
             }
         );
     }
 
     _connectToPlayer(busName) {
+        if (this._proxies.has(busName))
+            return;
+
         Gio.DBusProxy.new_for_bus(
             Gio.BusType.SESSION,
             Gio.DBusProxyFlags.NONE,
@@ -88,27 +147,80 @@ class Indicator extends PanelMenu.Button {
             MPRIS_PLAYER_IFACE,
             null,
             (source, res) => {
+                let proxy;
                 try {
-                    this._proxy = Gio.DBusProxy.new_for_bus_finish(res);
+                    proxy = Gio.DBusProxy.new_for_bus_finish(res);
                 } catch (e) {
                     logError(e, `Music Flow: failed to connect to ${busName}`);
                     return;
                 }
 
-                this._proxy.connect('g-properties-changed', () => {
-                    this._updateLabel();
+                this._proxies.set(busName, proxy);
+                this._lastChanged.set(busName, Date.now());
+
+                proxy.connect('g-properties-changed', () => {
+                    this._lastChanged.set(busName, Date.now());
+                    this._pickActivePlayer();
                 });
 
-                this._updateLabel();
+                this._pickActivePlayer();
             }
         );
     }
 
-    _updateLabel() {
-        if (!this._proxy)
-            return;
+    _pickActivePlayer() {
+        let bestBusName = null;
+        let bestTime = -1;
 
-        let metadata = this._proxy.get_cached_property('Metadata');
+        for (let [busName, proxy] of this._proxies.entries()) {
+            let status = proxy.get_cached_property('PlaybackStatus');
+            let statusStr = status ? status.deep_unpack() : null;
+
+            if (statusStr === 'Playing') {
+                let t = this._lastChanged.get(busName) || 0;
+                if (t > bestTime) {
+                    bestTime = t;
+                    bestBusName = busName;
+                }
+            }
+        }
+
+        if (bestBusName) {
+            this._activeProxy = this._proxies.get(bestBusName);
+            this._updateLabel(this._activeProxy);
+            this._updatePlayPauseIcon(true);
+            return;
+        }
+
+        for (let proxy of this._proxies.values()) {
+            let status = proxy.get_cached_property('PlaybackStatus');
+            if (status && status.deep_unpack() === 'Paused') {
+                this._activeProxy = proxy;
+                this._updateLabel(proxy);
+                this._updatePlayPauseIcon(false);
+                return;
+            }
+        }
+
+        this._activeProxy = null;
+        this._updateLabel(null);
+        this._updatePlayPauseIcon(false);
+    }
+
+    _updatePlayPauseIcon(isPlaying) {
+        let icon = this._playPauseButton.get_child();
+        icon.icon_name = isPlaying
+            ? 'media-playback-pause-symbolic'
+            : 'media-playback-start-symbolic';
+    }
+
+    _updateLabel(proxy) {
+        if (!proxy) {
+            this._label.set_text(_('No music playing'));
+            return;
+        }
+
+        let metadata = proxy.get_cached_property('Metadata');
         if (!metadata) {
             this._label.set_text(_('No music playing'));
             return;
@@ -127,6 +239,8 @@ class Indicator extends PanelMenu.Button {
             Gio.DBus.session.signal_unsubscribe(this._nameOwnerId);
             this._nameOwnerId = null;
         }
+        this._proxies.clear();
+        this._lastChanged.clear();
         super.destroy();
     }
 });

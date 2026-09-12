@@ -4,9 +4,9 @@ An MPRIS media widget for the GNOME Shell top bar — see what's playing and con
 
 ## Why this exists
 
-I first heard about [Music Flow](https://github.com/Clifford-Baidoo/Omarchy-music-flow) from a senior who'd built it — a slick MPRIS media widget for the bar. I installed it without checking closely, and only after running into `command not found` did I realize it was built specifically for Omarchy (Arch + Hyprland), not for the Ubuntu/GNOME setup I actually run.
+I first heard about [Music Flow](https://github.com/Clifford-Baidoo/Omarchy-music-flow) from a senior who'd built it — a slick MPRIS media widget for the bar. I installed it without checking closely, and only after running into `command not found` did I realize it was built specifically for Omarchy (Arch + Hyprland), not for the Ubuntu/GNOME setup I actually run lol.
 
-But the itch was real: I wanted to skip a song without alt-tabbing to Spotify every time a track I didn't like came on. If I had that problem, I figured other GNOME users on Ubuntu probably did too — so instead of giving up on the idea, I decided to build a GNOME-native version myself.
+But the itch was real: I wanted to skip a song without alt-tabbing to Spotify every time a track I didn't like came on. If I had that problem, I figured other GNOME users on Ubuntu probably did too... so instead of giving up on the idea, I decided to build a GNOME-native version myself.
 
 This is step one. There may already be extensions that do parts of this — but building my own, however small, is worth it both as a contribution and as a way to actually learn GNOME Shell extension development (with an AI assistant alongside me for the ride). Long term, I'd like to expand this beyond GNOME — ideally something closer to distro-agnostic on Linux, and maybe eventually macOS and Windows too.
 
